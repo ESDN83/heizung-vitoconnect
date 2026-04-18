@@ -12,6 +12,9 @@ per Optolink über einen ESP32 mit Ethernet und bindet sie in Home Assistant ein
 - **Fallback:** Wenn HA > 1 Stunde offline und Außentemperatur < 15°C, schaltet das Modul
   selbständig beide Heizkreise auf "WW + Heizung", damit das Haus nicht kalt wird.
 
+<img width="1243" height="1555" alt="grafik" src="https://github.com/user-attachments/assets/5fb8ad2a-dad2-407b-b7d2-0336b37e8e98" />
+
+
 ## Hardware
 
 ### Board
