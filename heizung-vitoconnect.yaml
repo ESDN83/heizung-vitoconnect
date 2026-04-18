@@ -1,0 +1,1062 @@
+esphome:
+  name: heizung-vitoconnect
+  friendly_name: Heizung Vitoconnect
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+  baud_rate: 0   # KRITISCH: UART0 Logger aus, sonst Konflikt mit Optolink
+
+api:
+  encryption:
+    key: !secret heizung_api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret heizung_ota_password
+
+# Ethernet LAN8720 (WT32-ETH01)
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk:
+    mode: CLK_EXT_IN
+    pin: 0
+  phy_addr: 1
+  power_pin: GPIO16
+
+# ===================================================================
+# Optolink UART
+# TX=GPIO2  <- 180 Ohm <- SFH 487-3 (880nm) Kathode(-) | Anode(+) <- 3.3V
+# RX=GPIO4  <- 10k Pull-up <- SFH 309 FA Collector | Emitter -> GND
+# ===================================================================
+uart:
+  - id: uart_vito
+    tx_pin: GPIO2
+    rx_pin: GPIO4
+    baud_rate: 4800
+    data_bits: 8
+    parity: EVEN
+    stop_bits: 2
+
+# Lokales Vitoconnect-Component mit 3000UL Timing-Fix fuer V200KW2
+#external_components:
+#  - source:
+#      type: local
+#      path: custom_components
+
+# NEU (zukunftssicher):
+external_components:
+  - source: github://dannerph/esphome_vitoconnect
+    components: [vitoconnect]
+
+vitoconnect:
+  uart_id: uart_vito
+  protocol: KW
+  update_interval: 30s
+
+# ===================================================================
+# Fallback: HA-Verbindung tracken
+# ===================================================================
+globals:
+  - id: ha_last_seen
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            api.connected:
+          then:
+            - globals.set:
+                id: ha_last_seen
+                value: !lambda 'return millis() / 1000;'
+      - if:
+          condition:
+            and:
+              - not:
+                  api.connected:
+              - lambda: 'return (millis() / 1000 - id(ha_last_seen)) > 3600;'
+              - lambda: 'return !isnan(id(aussentemperatur).state) && id(aussentemperatur).state < 15.0;'
+          then:
+            - logger.log: "FALLBACK: HA > 1h nicht erreichbar + TempA < 15C"
+            - lambda: |-
+                // --- Fallback M1 WW+Heizung ---
+                while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+                id(uart_vito).write_byte(0x04);
+                id(uart_vito).flush();
+                uint32_t t = millis();
+                while (millis() - t < 2000) {
+                  if (id(uart_vito).available()) {
+                    uint8_t b; id(uart_vito).read_byte(&b);
+                    if (b == 0x05) {
+                      uint8_t f[] = {0x01, 0xF4, 0x23, 0x23, 0x01, 0x02};
+                      id(uart_vito).write_array(f, 6);
+                      id(uart_vito).flush();
+                      ESP_LOGI("fallback", "M1 -> WW+Heizung OK");
+                      break;
+                    }
+                  }
+                  delay(1);
+                }
+                delay(3000);
+                // --- Fallback M2 WW+Heizung ---
+                while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+                id(uart_vito).write_byte(0x04);
+                id(uart_vito).flush();
+                t = millis();
+                while (millis() - t < 2000) {
+                  if (id(uart_vito).available()) {
+                    uint8_t b; id(uart_vito).read_byte(&b);
+                    if (b == 0x05) {
+                      uint8_t f[] = {0x01, 0xF4, 0x33, 0x23, 0x01, 0x02};
+                      id(uart_vito).write_array(f, 6);
+                      id(uart_vito).flush();
+                      ESP_LOGI("fallback", "M2 -> WW+Heizung OK");
+                      break;
+                    }
+                  }
+                  delay(1);
+                }
+
+# ===================================================================
+# SENSOREN  --  V200KW2 (Device-ID 0x2098, KW-Protokoll)
+# ===================================================================
+sensor:
+
+  # -- Interne Sensoren (fuer kombinierte Steuer-Entities) --
+  - platform: vitoconnect
+    id: betriebsart_m1_raw
+    address: 0x2323
+    length: 1
+    internal: true
+
+  - platform: vitoconnect
+    id: betriebsart_m2_raw
+    address: 0x3323
+    length: 1
+    internal: true
+
+  - platform: vitoconnect
+    id: raumsoll_normal_m1_raw
+    address: 0x2306
+    length: 1
+    internal: true
+
+  - platform: vitoconnect
+    id: raumsoll_red_m1_raw
+    address: 0x2307
+    length: 1
+    internal: true
+
+  - platform: vitoconnect
+    id: raumsoll_normal_m2_raw
+    address: 0x3306
+    length: 1
+    internal: true
+
+  - platform: vitoconnect
+    id: raumsoll_red_m2_raw
+    address: 0x3307
+    length: 1
+    internal: true
+
+  - platform: vitoconnect
+    id: ww_soll_raw
+    address: 0x6300
+    length: 1
+    internal: true
+
+  # Heizkurve: KORRIGIERTE Adressen (P300-Style, aktive Werte)
+  # Alt 0x2305/0x2304 enthielt veraltete Daten, korrekt: 0x27D3/0x27D4
+  - platform: vitoconnect
+    id: hk_neigung_m1_raw
+    address: 0x27D3
+    length: 1
+    internal: true
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    id: hk_niveau_m1_raw
+    address: 0x27D4
+    length: 1
+    internal: true
+
+  - platform: vitoconnect
+    id: hk_neigung_m2_raw
+    address: 0x37D3
+    length: 1
+    internal: true
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    id: hk_niveau_m2_raw
+    address: 0x37D4
+    length: 1
+    internal: true
+
+  # -- Temperaturen (sichtbar) --
+  - platform: vitoconnect
+    name: "Aussentemperatur"
+    id: aussentemperatur
+    address: 0x5525
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Aussentemperatur gedaempft"
+    address: 0x5527
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Kesseltemperatur"
+    address: 0x0802
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Kessel Solltemperatur"
+    address: 0x5502
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Warmwassertemperatur"
+    address: 0x0804
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Abgastemperatur"
+    address: 0x0808
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Vorlauftemperatur M2"
+    address: 0x080C
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Vorlauf Solltemperatur M1"
+    address: 0x2544
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Vorlauf Solltemperatur M2"
+    address: 0x3544
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Ruecklauftemperatur"
+    address: 0x080A
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: vitoconnect
+    name: "Speichertemperatur"
+    address: 0x0812
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  # -- Brenner --
+  - platform: vitoconnect
+    name: "Brennerstarts"
+    address: 0x088A
+    length: 2
+    unit_of_measurement: ""
+    icon: mdi:fire
+    state_class: total_increasing
+    accuracy_decimals: 0
+
+  - platform: vitoconnect
+    name: "Brennerstunden"
+    address: 0x08A7
+    length: 4
+    unit_of_measurement: "h"
+    icon: mdi:fire-circle
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.000277778  # /3600 (Sekunden -> Stunden)
+
+  - platform: vitoconnect
+    name: "Brennerleistung"
+    address: 0x55E3
+    length: 1
+    unit_of_measurement: "%"
+    icon: mdi:fire-alert
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - lambda: 'return x >= 255 ? NAN : x;'
+
+  # -- Mischer --
+  - platform: vitoconnect
+    name: "Mischer M1"
+    address: 0x254C
+    length: 1
+    unit_of_measurement: "%"
+    icon: mdi:valve
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - lambda: 'return x >= 255 ? NAN : x;'
+
+  - platform: vitoconnect
+    name: "Mischer M2"
+    address: 0x354C
+    length: 1
+    unit_of_measurement: "%"
+    icon: mdi:valve
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - lambda: 'return x >= 255 ? NAN : x;'
+
+# ===================================================================
+# BINAERE SENSOREN
+# ===================================================================
+binary_sensor:
+  - platform: vitoconnect
+    name: "Brenner"
+    address: 0x551E
+    device_class: running
+
+  - platform: vitoconnect
+    name: "Umwaelzpumpe M1"
+    address: 0x2906
+    device_class: running
+
+  - platform: vitoconnect
+    name: "Umwaelzpumpe M2"
+    address: 0x3906
+    device_class: running
+
+  - platform: vitoconnect
+    name: "Speicherladepumpe"
+    address: 0x0845
+    device_class: running
+
+  - platform: vitoconnect
+    name: "Zirkulationspumpe"
+    address: 0x0846
+    device_class: running
+
+  - platform: vitoconnect
+    name: "Stoerung"
+    address: 0x7579
+    device_class: problem
+
+# ===================================================================
+# BETRIEBSART (Select-Dropdown, kombiniert Lesen + Schreiben)
+# NEUE METHODE: Lambda wartet aktiv auf 0x05-ACK vor dem Schreiben!
+# ===================================================================
+select:
+  - platform: template
+    name: "Betriebsart M1"
+    id: betriebsart_m1_sel
+    icon: mdi:hvac
+    options:
+      - "Abschalt"
+      - "nur Warmwasser"
+      - "WW + Heizung"
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(betriebsart_m1_raw).state)) return {};
+      int v = (int)id(betriebsart_m1_raw).state;
+      if (v == 0) return std::string("Abschalt");
+      if (v == 1) return std::string("nur Warmwasser");
+      if (v == 2) return std::string("WW + Heizung");
+      return {};
+    set_action:
+      - lambda: |-
+          uint8_t val = 0;
+          if (x == "Abschalt") val = 0x00;
+          else if (x == "nur Warmwasser") val = 0x01;
+          else if (x == "WW + Heizung") val = 0x02;
+          // Flush RX buffer
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          // Send sync
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          // Wait for ACK (0x05) before writing
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x23, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "BA M1 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "BA M1 FAILED - no ACK");
+
+  - platform: template
+    name: "Betriebsart M2"
+    id: betriebsart_m2_sel
+    icon: mdi:hvac
+    options:
+      - "Abschalt"
+      - "nur Warmwasser"
+      - "WW + Heizung"
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(betriebsart_m2_raw).state)) return {};
+      int v = (int)id(betriebsart_m2_raw).state;
+      if (v == 0) return std::string("Abschalt");
+      if (v == 1) return std::string("nur Warmwasser");
+      if (v == 2) return std::string("WW + Heizung");
+      return {};
+    set_action:
+      - lambda: |-
+          uint8_t val = 0;
+          if (x == "Abschalt") val = 0x00;
+          else if (x == "nur Warmwasser") val = 0x01;
+          else if (x == "WW + Heizung") val = 0x02;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x33, 0x23, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "BA M2 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "BA M2 FAILED - no ACK");
+
+# ===================================================================
+# TEMPERATUR-SOLLWERTE + HEIZKURVE (kombiniert Lesen + Schreiben)
+# ===================================================================
+number:
+  - platform: template
+    name: "WW Solltemperatur"
+    id: ww_soll_num
+    min_value: 10
+    max_value: 60
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:water-thermometer
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(ww_soll_raw).state)) return {};
+      return (float)id(ww_soll_raw).state;
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)x;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x63, 0x00, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "WW Soll -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "WW Soll FAILED - no ACK");
+
+  - platform: template
+    name: "Raumsolltemperatur Normal M1"
+    id: raumsoll_normal_m1_num
+    min_value: 10
+    max_value: 30
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:home-thermometer
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(raumsoll_normal_m1_raw).state)) return {};
+      return (float)id(raumsoll_normal_m1_raw).state;
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)x;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x06, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Raumsoll N M1 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Raumsoll N M1 FAILED - no ACK");
+
+  - platform: template
+    name: "Raumsolltemperatur Reduziert M1"
+    id: raumsoll_red_m1_num
+    min_value: 5
+    max_value: 25
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:home-thermometer-outline
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(raumsoll_red_m1_raw).state)) return {};
+      return (float)id(raumsoll_red_m1_raw).state;
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)x;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x07, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Raumsoll R M1 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Raumsoll R M1 FAILED - no ACK");
+
+  - platform: template
+    name: "Raumsolltemperatur Normal M2"
+    id: raumsoll_normal_m2_num
+    min_value: 10
+    max_value: 30
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:home-thermometer
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(raumsoll_normal_m2_raw).state)) return {};
+      return (float)id(raumsoll_normal_m2_raw).state;
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)x;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x33, 0x06, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Raumsoll N M2 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Raumsoll N M2 FAILED - no ACK");
+
+  - platform: template
+    name: "Raumsolltemperatur Reduziert M2"
+    id: raumsoll_red_m2_num
+    min_value: 5
+    max_value: 25
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:home-thermometer-outline
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(raumsoll_red_m2_raw).state)) return {};
+      return (float)id(raumsoll_red_m2_raw).state;
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)x;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x33, 0x07, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Raumsoll R M2 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Raumsoll R M2 FAILED - no ACK");
+
+  - platform: template
+    name: "Party Temperatur M1"
+    min_value: 10
+    max_value: 30
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:party-popper
+    optimistic: true
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)x;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x08, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Party Temp M1 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Party Temp M1 FAILED - no ACK");
+
+  - platform: template
+    name: "Party Temperatur M2"
+    min_value: 10
+    max_value: 30
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:party-popper
+    optimistic: true
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)x;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x33, 0x08, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Party Temp M2 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Party Temp M2 FAILED - no ACK");
+
+  # -- Heizkurve Neigung (gespeichert als Wert*10, z.B. 14 = 1.4) --
+  - platform: template
+    name: "Heizkurve Neigung M1"
+    id: hk_neigung_m1_num
+    min_value: 0.2
+    max_value: 3.5
+    step: 0.1
+    icon: mdi:chart-line
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(hk_neigung_m1_raw).state)) return {};
+      return (float)id(hk_neigung_m1_raw).state;
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)(x * 10);
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x27, 0xD3, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "HK Neig M1 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "HK Neig M1 FAILED - no ACK");
+
+  - platform: template
+    name: "Heizkurve Neigung M2"
+    id: hk_neigung_m2_num
+    min_value: 0.2
+    max_value: 3.5
+    step: 0.1
+    icon: mdi:chart-line
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(hk_neigung_m2_raw).state)) return {};
+      return (float)id(hk_neigung_m2_raw).state;
+    set_action:
+      - lambda: |-
+          uint8_t val = (uint8_t)(x * 10);
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x37, 0xD3, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "HK Neig M2 -> %d OK", val);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "HK Neig M2 FAILED - no ACK");
+
+  # -- Heizkurve Niveau (signed: 0xFF = -1, Bereich -13 bis +40) --
+  - platform: template
+    name: "Heizkurve Niveau M1"
+    id: hk_niveau_m1_num
+    min_value: -13
+    max_value: 40
+    step: 1
+    icon: mdi:chart-line-variant
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(hk_niveau_m1_raw).state)) return {};
+      return (float)id(hk_niveau_m1_raw).state;
+    set_action:
+      - lambda: |-
+          int8_t sval = (int8_t)x;
+          uint8_t val = (uint8_t)sval;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x27, 0xD4, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "HK Niv M1 -> %d OK", sval);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "HK Niv M1 FAILED - no ACK");
+
+  - platform: template
+    name: "Heizkurve Niveau M2"
+    id: hk_niveau_m2_num
+    min_value: -13
+    max_value: 40
+    step: 1
+    icon: mdi:chart-line-variant
+    update_interval: 10s
+    lambda: |-
+      if (isnan(id(hk_niveau_m2_raw).state)) return {};
+      return (float)id(hk_niveau_m2_raw).state;
+    set_action:
+      - lambda: |-
+          int8_t sval = (int8_t)x;
+          uint8_t val = (uint8_t)sval;
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x37, 0xD4, 0x01, val};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "HK Niv M2 -> %d OK", sval);
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "HK Niv M2 FAILED - no ACK");
+
+# ===================================================================
+# SCHALTER (Party/Spar/Zirkulation)
+# ===================================================================
+switch:
+  - platform: template
+    name: "Sparbetrieb M1"
+    icon: mdi:leaf
+    optimistic: true
+    turn_on_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x02, 0x01, 0x01};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Spar M1 ON OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Spar M1 ON FAILED");
+    turn_off_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x02, 0x01, 0x00};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Spar M1 OFF OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Spar M1 OFF FAILED");
+
+  - platform: template
+    name: "Partybetrieb M1"
+    icon: mdi:party-popper
+    optimistic: true
+    turn_on_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x03, 0x01, 0x01};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Party M1 ON OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Party M1 ON FAILED");
+    turn_off_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x23, 0x03, 0x01, 0x00};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Party M1 OFF OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Party M1 OFF FAILED");
+
+  - platform: template
+    name: "Partybetrieb M2"
+    icon: mdi:party-popper
+    optimistic: true
+    turn_on_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x33, 0x03, 0x01, 0x01};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Party M2 ON OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Party M2 ON FAILED");
+    turn_off_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x33, 0x03, 0x01, 0x00};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Party M2 OFF OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Party M2 OFF FAILED");
+
+  - platform: template
+    name: "Zirkulationspumpe Schalten"
+    icon: mdi:pump
+    optimistic: true
+    turn_on_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x65, 0x15, 0x01, 0x01};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Zirk ON OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Zirk ON FAILED");
+    turn_off_action:
+      - lambda: |-
+          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
+          id(uart_vito).write_byte(0x04);
+          id(uart_vito).flush();
+          uint32_t t = millis();
+          while (millis() - t < 2000) {
+            if (id(uart_vito).available()) {
+              uint8_t b; id(uart_vito).read_byte(&b);
+              if (b == 0x05) {
+                uint8_t frame[] = {0x01, 0xF4, 0x65, 0x15, 0x01, 0x00};
+                id(uart_vito).write_array(frame, sizeof(frame));
+                id(uart_vito).flush();
+                ESP_LOGI("vito_w", "Zirk OFF OK");
+                return;
+              }
+            }
+            delay(1);
+          }
+          ESP_LOGW("vito_w", "Zirk OFF FAILED");

@@ -1,0 +1,21 @@
+# Secrets niemals commiten
+secrets.yaml
+
+# ESPHome Build-Artefakte
+.esphome/
+build/
+*.bin
+
+# Logs
+logs_*.txt
+*.log
+
+# Claude-Arbeitsdateien (Transcripts, Skripte, lokale Settings)
+.claude/
+
+# Editor/OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
