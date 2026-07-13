@@ -151,3 +151,15 @@ Ein paar Dinge, die beim Nachbau gerne übersehen werden:
   Bauanleitungen für Adapter
 - [bertmelis/VitoWiFi](https://github.com/bertmelis/VitoWiFi) — Arduino-Library, Basis von
   `esphome_vitoconnect`
+
+---
+
+## 🔗 Weitere Projekte von ESDN83
+
+| Projekt | Beschreibung |
+|---------|--------------|
+| [HA_enoceanmqtt-addon-ui](https://github.com/ESDN83/HA_enoceanmqtt-addon-ui) | EnOcean-MQTT Home-Assistant-Add-on mit Web-UI — visueller Geräte-Wizard, 96+ EEP-Profile, MQTT Auto-Discovery, Eltako-Aktorsteuerung |
+| [esp-ha-usb-gateway](https://github.com/ESDN83/esp-ha-usb-gateway) | ESP32-S3 USB-zu-TCP-Bridge für Home Assistant — Zigbee-/EnOcean-USB-Sticks übers Netzwerk nutzen (ESPHome) |
+| [esp-cyberpower-ups](https://github.com/ESDN83/esp-cyberpower-ups) | ESP32-S3 CyberPower-USV-Monitor über USB HID — native ESPHome-Komponente, direkte Home-Assistant-Integration |
+| [Home-Solar-Portable-emergency-charger](https://github.com/ESDN83/Home-Solar-Portable-emergency-charger) | DIY-Notstrom-Ladegerät für PV-Heimspeicher (E3DC / Victron kompatibel) |
+| [HA-Blueprints](https://github.com/ESDN83/HA-Blueprints) | Home-Assistant-Automations-Blueprints — EnOcean PTM 215Z Dimmen & Farbszenen via Zigbee2MQTT |
