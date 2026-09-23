@@ -343,13 +343,30 @@ sensor:
     filters:
       - multiply: 0.1
 
+  # 0x0808 ist bei der VScotHO1 (20CB) laut openv der Ruecklauf (getTempRL17A),
+  # kein Abgasfuehler. Vorher als "Abgastemperatur" gefuehrt; das alte
+  # "Ruecklauftemperatur" auf 0x080A lieferte 114 °C (bei 20CB nicht belegt).
   - platform: vitoconnect
-    name: "Abgastemperatur"
+    name: "Ruecklauftemperatur"
     address: 0x0808
     length: 2
     unit_of_measurement: "°C"
     device_class: temperature
     state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  # Diagnose 23.09.2026: openv nennt fuer 20CB 0x3900 (getTempVListM2); 0x080C
+  # laeuft bisher plausibel. Beide eine Weile vergleichen, dann einen entfernen.
+  - platform: vitoconnect
+    name: "Diagnose Vorlauf M2 0x3900"
+    address: 0x3900
+    length: 2
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    entity_category: diagnostic
     accuracy_decimals: 1
     filters:
       - multiply: 0.1
@@ -379,17 +396,6 @@ sensor:
   - platform: vitoconnect
     name: "Vorlauf Solltemperatur M2"
     address: 0x3544
-    length: 2
-    unit_of_measurement: "°C"
-    device_class: temperature
-    state_class: measurement
-    accuracy_decimals: 1
-    filters:
-      - multiply: 0.1
-
-  - platform: vitoconnect
-    name: "Ruecklauftemperatur"
-    address: 0x080A
     length: 2
     unit_of_measurement: "°C"
     device_class: temperature
@@ -473,28 +479,7 @@ sensor:
           uint16_t u = (uint16_t)(int16_t)(int)x;
           return (float)(u >> 8);
 
-  # -- Mischer --
-  - platform: vitoconnect
-    name: "Mischer M1"
-    address: 0x254C
-    length: 1
-    unit_of_measurement: "%"
-    icon: mdi:valve
-    state_class: measurement
-    accuracy_decimals: 0
-    filters:
-      - lambda: 'return x >= 255 ? NAN : x;'
-
-  - platform: vitoconnect
-    name: "Mischer M2"
-    address: 0x354C
-    length: 1
-    unit_of_measurement: "%"
-    icon: mdi:valve
-    state_class: measurement
-    accuracy_decimals: 0
-    filters:
-      - lambda: 'return x >= 255 ? NAN : x;'
+  # Mischer M1/M2 (0x254C/0x354C) am 23.09.2026 entfernt: bei der 20CB immer 255.
 
 # ===================================================================
 # BINAERE SENSOREN
