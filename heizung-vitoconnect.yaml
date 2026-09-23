@@ -8,21 +8,8 @@ esp32:
     type: arduino
 
 logger:
-  # DIAGNOSE 23.09.2026: DEBUG, um den Stillstand der Optolink-Warteschlange zu
-  # sehen (Lesen stoppt nach 2 Durchlaeufen). Danach wieder auf INFO.
-  level: DEBUG
+  level: INFO
   baud_rate: 0   # KRITISCH: UART0 Logger aus, sonst Konflikt mit Optolink
-  logs:
-    sensor: INFO
-    binary_sensor: INFO
-    select: INFO
-    number: INFO
-    switch: INFO
-    text_sensor: INFO
-    api: INFO
-    api.service: INFO
-    scheduler: INFO
-    component: INFO
 
 api:
   encryption:
@@ -79,7 +66,14 @@ external_components:
 vitoconnect:
   uart_id: uart_vito
   protocol: KW
-  update_interval: 30s
+  # 150s statt 30s (23.09.2026): jede Abfrage wartet auf das naechste 0x05 der
+  # KW2, ca. 3 s pro Datenpunkt. Bei ~37 Datenpunkten dauert ein Durchlauf ca.
+  # 112 s. Mit 30s schob update() alle 30 s die komplette Liste nach, die Queue
+  # (48) lief voll und nur die ersten ~10 Datenpunkte (Betriebsart, Raumsoll,
+  # Heizkurve) kamen noch dran; Aussen, Kessel, WW usw. verhungerten und sahen
+  # eingefroren aus (belegt per DEBUG-Log 23.09.2026 17:21 bis 17:43).
+  # Faustregel: update_interval > Anzahl Datenpunkte x 3 s.
+  update_interval: 150s
 
 # ===================================================================
 # Fallback: HA-Verbindung tracken
@@ -279,7 +273,10 @@ sensor:
     on_value:
       - lambda: |-
           id(vito_last_read) = millis();
-          if (id(vito_reboots) != 0) id(vito_reboots) = 0;
+          // Zaehler erst nach 20 min stabilem Lesen zuruecksetzen. Vorher setzten
+          // die ersten Werte nach jedem Neustart den Zaehler zurueck, die Grenze
+          // von 3 Neustarts griff nie (Loop alle 18 min am 23.09.2026).
+          if (id(vito_reboots) != 0 && millis() > 1200000UL) id(vito_reboots) = 0;
 
   - platform: vitoconnect
     name: "Aussentemperatur gedaempft"

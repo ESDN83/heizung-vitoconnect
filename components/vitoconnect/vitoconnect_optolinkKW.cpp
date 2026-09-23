@@ -82,10 +82,10 @@ void OptolinkKW::_init() {
     }
   } else {
     // ESDN83: 3000UL statt 1000UL (V200KW2, Device 0x2098). Die KW2 braucht nach
-    // einem 0x04-Reset 2 bis 3 s bis zum ersten 0x05. Mit 1000UL setzt jedes neue
-    // 0x04 den Zyklus zurueck, das Component kommt nach dem ersten Aussetzer nie
-    // mehr aus INIT heraus (Livelock: Lesen stand am 14.09., 19.09. und
-    // 23.09.2026 jeweils 2 bis 3 Minuten nach dem Start still).
+    // einem 0x04-Reset 2 bis 3 s bis zum ersten 0x05; mit 1000UL kann jedes neue
+    // 0x04 den Zyklus zuruecksetzen. Frueherer lokaler Fix, wieder eingebaut.
+    // Hinweis: das "Einfrieren" der Werte im September 2026 hatte eine andere
+    // Ursache (Queue-Verhungern bei zu kurzem update_interval, siehe HERKUNFT.md).
     if (millis() - _lastMillis > 3000UL) {  // try to reset if Vitotronic is in a connected state with the P300 protocol
       _lastMillis = millis();
       const uint8_t buff[] = {0x04};
