@@ -114,12 +114,7 @@ class Optolink {
   explicit Optolink(uart::UARTDevice* uart);
   virtual ~Optolink();
 
-  /**
-   * @brief Attach a callback for successful requests.
-   * 
-   * @param callback Function to be called when data is received.
-   */
-  void onData(void (*callback)(uint8_t* data, uint8_t len));
+  // ESDN83: onData/onError-Ueberladungen ohne arg entfernt (unbenutzt, UB-Cast).
 
   /**
    * @brief Attach a callback with an argument for successful requests.
@@ -127,13 +122,6 @@ class Optolink {
    * @param callback Function to be called when data is received.
    */
   void onData(OnDataArgCallback callback);
-
-  /**
-   * @brief Attach the callback for erroneous requests.
-   * 
-   * @param callback Function to be called when en error is encountered.
-   */
-  void onError(void (*callback)(uint8_t error));
 
   /**
    * @brief Attach the callback with an argument for erroneous requests.

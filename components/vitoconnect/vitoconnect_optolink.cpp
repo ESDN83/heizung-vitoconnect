@@ -38,16 +38,12 @@ Optolink::~Optolink() {
   // nothing to do
 }
 
-void Optolink::onData(void (*callback)(uint8_t* data, uint8_t len)) {
-  _onData = reinterpret_cast<OnDataArgCallback>(callback);
-}
+// ESDN83: Die Ueberladungen onData/onError ohne arg-Parameter entfernt. Sie
+// wurden nirgends benutzt und haetten per reinterpret_cast eine Funktion mit
+// falscher Signatur aufgerufen (-Wcast-function-type, Zeilen 42 und 50).
 
 void Optolink::onData(OnDataArgCallback callback) {
   _onData = callback;
-}
-
-void Optolink::onError(void (*callback)(uint8_t error)) {
-  _onError = reinterpret_cast<OnErrorArgCallback>(callback);
 }
 
 void Optolink::onError(OnErrorArgCallback callback) {

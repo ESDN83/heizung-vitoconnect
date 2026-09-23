@@ -71,6 +71,11 @@ class OptolinkDP {
    * @param obj Object to be copied.
    */
   OptolinkDP(const OptolinkDP& obj);
+  // ESDN83: eigener Zuweisungsoperator (Rule of Three). Vorher nutzte die Queue
+  // den impliziten, der nur den data-Zeiger kopierte (-Wdeprecated-copy in
+  // vitoconnect_simpleQueue.h:93); bei Schreib-Datenpunkten waere data dann
+  // doppelt freigegeben worden.
+  OptolinkDP& operator=(const OptolinkDP& obj);
 
   /**
    * @brief Destroy the OptolinkDP object

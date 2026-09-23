@@ -30,3 +30,17 @@ external_components:
 2. `vitoconnect.cpp`: `check_uart_settings()` entfernt (deprecated, entfaellt mit
    ESPHome 2027.3.0), dafuer `FINAL_VALIDATE_SCHEMA` in `__init__.py` (4800 8E2,
    TX und RX Pflicht).
+3. `vitoconnect_optolink.cpp/.h`: die Ueberladungen `onData(void(*)(uint8_t*, uint8_t))`
+   und `onError(void(*)(uint8_t))` entfernt. Sie wurden nirgends benutzt und haetten
+   per `reinterpret_cast` eine Funktion mit falscher Signatur aufgerufen
+   (`-Wcast-function-type`, Zeilen 42 und 50).
+4. `vitoconnect_optolinkDP.h/.cpp`: eigener `operator=` (Rule of Three). Die Queue
+   nutzte vorher den impliziten, der bei Schreib-Datenpunkten nur den `data`-Zeiger
+   kopiert haette (`-Wdeprecated-copy` in `vitoconnect_simpleQueue.h:93`, im
+   Ernstfall doppeltes `delete[]`).
+
+## Hinweis zum Geraet
+
+Die Regelung meldet unter `0x00F8` die ID **0x20CB (VScotHO1)**, nicht 0x2098
+(V200KW2). Sie spricht das KW-Protokoll, hat aber die Adressbelegung der neueren
+Generation. Passende Adressen: openv `vcontrold/xml/300/vito.xml`, Geraet 20CB.

@@ -6,6 +6,11 @@ esp32:
   board: esp32dev
   framework:
     type: arduino
+    advanced:
+      # Beide Werte empfiehlt ESPHome beim Start selbst (Chip rev3.1, Bootloader
+      # kann SRAM1 als IRAM): kleineres Binary, 40 KB mehr IRAM.
+      minimum_chip_revision: "3.1"
+      sram1_as_iram: true
 
 logger:
   level: INFO
@@ -16,8 +21,18 @@ api:
     key: !secret heizung_api_encryption_key
 
 ota:
+  # Kein OTA-Passwort mehr (ESPHome-Warnung: die api-Verschluesselung
+  # authentifiziert den Upload schon, das Passwort kostet ~3,5 KB Flash).
   - platform: esphome
-    password: !secret heizung_ota_password
+
+# Webseite des ESP (wie beim Garagentor). local: true liefert die Oberflaeche
+# vom ESP selbst aus, ohne Nachladen von oi.esphome.io (keine externen Ressourcen).
+# Werte: http://192.168.1.80/  Log live: http://192.168.1.80/events
+web_server:
+  port: 80
+  version: 3
+  local: true
+  include_internal: false
 
 # Ethernet LAN8720 (WT32-ETH01)
 ethernet:
@@ -26,7 +41,9 @@ ethernet:
   mdio_pin: GPIO18
   clk:
     mode: CLK_EXT_IN
-    pin: 0
+    pin:
+      number: 0
+      ignore_strapping_warning: true   # WT32-ETH01: GPIO0 = externer 50-MHz-Takt, bauartbedingt
   phy_addr: 1
   power_pin: GPIO16
 
@@ -42,7 +59,9 @@ ethernet:
 # ===================================================================
 uart:
   - id: uart_vito
-    tx_pin: GPIO2
+    tx_pin:
+      number: GPIO2
+      ignore_strapping_warning: true   # Optolink-TX, keine Pull-Widerstaende angeschlossen
     rx_pin: GPIO4
     baud_rate: 4800
     data_bits: 8
@@ -55,9 +74,9 @@ uart:
 #      type: local
 #      path: custom_components
 
-# Eigene Kopie des dannerph-Components mit 3000UL Timing-Fix fuer V200KW2
-# (ging beim Wechsel auf github://dannerph verloren, Folge: Optolink-Lesen fror
-# 2 bis 3 min nach jedem Start ein). Details: components/vitoconnect/HERKUNFT.md
+# Eigene Kopie des dannerph-Components (MIT): 3000UL Timing-Fix, ohne
+# check_uart_settings (ESPHome 2027.3), ohne UB-Casts, OptolinkDP mit operator=.
+# Details: components/vitoconnect/HERKUNFT.md
 external_components:
   - source: github://ESDN83/heizung-vitoconnect@stand-2026-09-23-selbstheilung
     components: [vitoconnect]
@@ -181,7 +200,7 @@ button:
     name: "Neustart"
 
 # ===================================================================
-# SENSOREN  --  V200KW2 (Device-ID 0x2098, KW-Protokoll)
+# SENSOREN  --  VScotHO1 (Geraete-ID 0x20CB, hier per KW-Protokoll)
 # ===================================================================
 sensor:
 
@@ -302,7 +321,7 @@ sensor:
 
   - platform: vitoconnect
     name: "Kessel Solltemperatur"
-    address: 0x5502
+    address: 0x555A   # VScotHO1 (20CB) laut openv; 0x5502 lieferte konstant -0,1
     length: 2
     unit_of_measurement: "°C"
     device_class: temperature
@@ -411,7 +430,8 @@ sensor:
 
   - platform: vitoconnect
     name: "Brennerleistung"
-    address: 0x55E3
+    id: brennerleistung
+    address: 0x55D3   # VScotHO1 (20CB) getBrennerStatus, Prozent; 0x55E3 gab es hier nicht
     length: 1
     unit_of_measurement: "%"
     icon: mdi:fire-alert
@@ -420,20 +440,13 @@ sensor:
     filters:
       - lambda: 'return x >= 255 ? NAN : x;'
 
-  # -- Diagnose 23.09.2026, Runde 2: Kandidaten fuer Brenner/Pumpen --
-  # Runde 1 ergab: 0x551E (Brenner), 0x0845 (Speicherladepumpe) und 0x0846
-  # (Zirkulationspumpe) liefern auf dieser KW2 nur 0xFF = Adresse unbekannt.
-  # Die Binaersensoren darauf haben nie etwas gemessen. 0x2906 (Umwaelzpumpe M1)
-  # lieferte 0 und ist gueltig. Kandidaten: 0x6515 wird schon zum Schalten der
-  # Zirkulation beschrieben, 0x6513 Speicherladepumpe liegt daneben,
-  # 0x0842 und 0x55D3 fuer den Brenner. Gesucht: Werte 0/1 statt 255.
-  # Geraete-ID der Regelung (0x00F8, 2 Byte, bei allen Vitotronic gleich).
-  # Die Adressen der openv-Liste fuer ID 2098 (V200KW2) liefern hier 0xFF, die
-  # P300-artigen (2323, 5525, 27D3, 55D3, 6513, 6515) antworten. Die ID zeigt,
-  # welche openv-Adressliste wirklich passt. dannerph setzt data[1]<<8|data[0]
-  # zusammen, der Filter dreht die Bytes zurueck: 8344 = 0x2098.
+  # -- Geraete-ID (0x00F8): 0x20CB = VScotHO1, Protokoll KW/300 (openv) --
+  # Nicht V200KW2 (0x2098)! Deshalb lieferten die KW2-Adressen 0x551E, 0x0845,
+  # 0x0846 und 0x7579 nur 0xFF. Adressen unten laut openv vcontrold
+  # xml/300/vito.xml fuer Geraet 20CB. dannerph setzt data[1]<<8|data[0]
+  # zusammen, der Filter dreht die Bytes zurueck: 8395 = 0x20CB.
   - platform: vitoconnect
-    name: "Diagnose Geraete-ID dezimal"
+    name: "Geraete-ID dezimal"
     address: 0x00F8
     length: 2
     entity_category: diagnostic
@@ -443,33 +456,20 @@ sensor:
           uint16_t u = (uint16_t)(int16_t)(int)x;
           return (float)(((u & 0xFF) << 8) | (u >> 8));
 
+  # -- Pumpe Heizkreis M1: 0x7663, 2 Byte, zweites Byte = Drehzahl in % --
   - platform: vitoconnect
-    name: "Diagnose Roh 0x0842"
-    address: 0x0842
-    length: 1
-    entity_category: diagnostic
+    name: "Umwaelzpumpe M1 Drehzahl"
+    id: pumpe_m1_drehzahl
+    address: 0x7663
+    length: 2
+    unit_of_measurement: "%"
+    icon: mdi:pump
+    state_class: measurement
     accuracy_decimals: 0
-
-  - platform: vitoconnect
-    name: "Diagnose Roh 0x55D3"
-    address: 0x55D3
-    length: 1
-    entity_category: diagnostic
-    accuracy_decimals: 0
-
-  - platform: vitoconnect
-    name: "Diagnose Roh 0x6513"
-    address: 0x6513
-    length: 1
-    entity_category: diagnostic
-    accuracy_decimals: 0
-
-  - platform: vitoconnect
-    name: "Diagnose Roh 0x6515"
-    address: 0x6515
-    length: 1
-    entity_category: diagnostic
-    accuracy_decimals: 0
+    filters:
+      - lambda: |-
+          uint16_t u = (uint16_t)(int16_t)(int)x;
+          return (float)(u >> 8);
 
   # -- Mischer --
   - platform: vitoconnect
@@ -498,34 +498,41 @@ sensor:
 # BINAERE SENSOREN
 # ===================================================================
 binary_sensor:
-  - platform: vitoconnect
+  # Adressen fuer VScotHO1 (20CB) laut openv, siehe Geraete-ID oben. Die Namen
+  # sind unveraendert, damit die HA-Entitaeten und ihr Verlauf erhalten bleiben.
+  # Brenner/Umwaelzpumpe M1 sind Template-Sensoren aus den Prozentwerten.
+  - platform: template
     name: "Brenner"
-    address: 0x551E
     device_class: running
+    lambda: |-
+      if (isnan(id(brennerleistung).state)) return {};
+      return id(brennerleistung).state > 0;
 
-  - platform: vitoconnect
+  - platform: template
     name: "Umwaelzpumpe M1"
-    address: 0x2906
     device_class: running
+    lambda: |-
+      if (isnan(id(pumpe_m1_drehzahl).state)) return {};
+      return id(pumpe_m1_drehzahl).state > 0;
 
   - platform: vitoconnect
     name: "Umwaelzpumpe M2"
-    address: 0x3906
+    address: 0x7665
     device_class: running
 
   - platform: vitoconnect
     name: "Speicherladepumpe"
-    address: 0x0845
+    address: 0x6513
     device_class: running
 
   - platform: vitoconnect
     name: "Zirkulationspumpe"
-    address: 0x0846
+    address: 0x6515
     device_class: running
 
   - platform: vitoconnect
     name: "Stoerung"
-    address: 0x7579
+    address: 0x0A82   # 20CB; 0x7579 (KW2) lieferte 0xFF und stand deshalb immer auf "an"
     device_class: problem
 
 # ===================================================================
