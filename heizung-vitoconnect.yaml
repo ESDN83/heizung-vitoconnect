@@ -30,6 +30,11 @@ ethernet:
   phy_addr: 1
   power_pin: GPIO16
 
+# Bluetooth-Proxy am 23.09.2026 entfernt: BLE-Funk teilt sich die CPU mit
+# Ethernet und der Optolink-UART (4800 Baud), Verdacht als Mitursache fuer das
+# eingefrorene Optolink-Lesen 19.09. bis 23.09.2026 (nicht belegt). Im Keller
+# empfangen weiter drain-pump und Shelly_Gefriertruhe_Hausanschlussraum.
+
 # ===================================================================
 # Optolink UART
 # TX=GPIO2  <- 180 Ohm <- SFH 487-3 (880nm) Kathode(-) | Anode(+) <- 3.3V
@@ -68,8 +73,41 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+  # Herzschlag des Optolink-Lesens (23.09.2026): vom 19.09. 16:19 bis 23.09.
+  # 14:56 hing das Lesen still, das ESP blieb erreichbar, Schreiben ging weiter.
+  # on_value der Aussentemperatur setzt den Zeitstempel bei JEDER Abfrage
+  # (dannerph decode() ruft publish_state immer auf, auch bei gleichem Wert).
+  - id: vito_last_read
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  # Zaehlt Selbst-Neustarts ohne erfolgreiches Lesen dazwischen. Ueberlebt den
+  # Neustart, damit bei stromloser Heizung nicht endlos alle 15 min neu gestartet wird.
+  - id: vito_reboots
+    type: int
+    restore_value: yes
+    initial_value: '0'
 
 interval:
+  # Selbstheilung Optolink-Lesen (23.09.2026): 15 min kein frischer Wert
+  # (und mindestens 15 min seit dem Start) -> Neustart. Hoechstens 3 Mal am Stueck
+  # ohne erfolgreiches Lesen dazwischen, danach wird nicht mehr neu gestartet
+  # (z.B. Heizung stromlos), HA meldet dann ueber "Heizung Vitoconnect eingefroren".
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return millis() > 900000UL
+                  && (millis() - id(vito_last_read)) > 900000UL
+                  && id(vito_reboots) < 3;
+          then:
+            - lambda: |-
+                id(vito_reboots) += 1;
+                ESP_LOGW("vito_wd", "Optolink liefert seit 15 min nichts, Neustart %d/3", id(vito_reboots));
+                global_preferences->sync();
+            - delay: 1s
+            - lambda: 'App.safe_reboot();'
   - interval: 60s
     then:
       - if:
@@ -126,6 +164,11 @@ interval:
                   }
                   delay(1);
                 }
+
+# Neustart-Knopf fuer HA (23.09.2026): vorher ging ein Neustart nur per Neu-Deploy.
+button:
+  - platform: restart
+    name: "Neustart"
 
 # ===================================================================
 # SENSOREN  --  V200KW2 (Device-ID 0x2098, KW-Protokoll)
@@ -217,6 +260,10 @@ sensor:
     accuracy_decimals: 1
     filters:
       - multiply: 0.1
+    on_value:
+      - lambda: |-
+          id(vito_last_read) = millis();
+          if (id(vito_reboots) != 0) id(vito_reboots) = 0;
 
   - platform: vitoconnect
     name: "Aussentemperatur gedaempft"
