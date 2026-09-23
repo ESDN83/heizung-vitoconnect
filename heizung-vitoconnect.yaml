@@ -21,9 +21,11 @@ api:
     key: !secret heizung_api_encryption_key
 
 ota:
-  # Kein OTA-Passwort mehr (ESPHome-Warnung: die api-Verschluesselung
-  # authentifiziert den Upload schon, das Passwort kostet ~3,5 KB Flash).
+  # Passwort bleibt vorerst: das laufende Firmware verlangt es, ein Upload ohne
+  # Passwort koennte abgewiesen werden (dann nur noch USB-Flash im Keller).
+  # ESPHome-Warnung "ota password wastes flash" daher bewusst noch offen.
   - platform: esphome
+    password: !secret heizung_ota_password
 
 # Webseite des ESP (wie beim Garagentor). local: true liefert die Oberflaeche
 # vom ESP selbst aus, ohne Nachladen von oi.esphome.io (keine externen Ressourcen).
