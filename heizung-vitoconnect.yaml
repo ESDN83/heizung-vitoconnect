@@ -55,10 +55,13 @@ uart:
 #      type: local
 #      path: custom_components
 
-# NEU (zukunftssicher):
+# Eigene Kopie des dannerph-Components mit 3000UL Timing-Fix fuer V200KW2
+# (ging beim Wechsel auf github://dannerph verloren, Folge: Optolink-Lesen fror
+# 2 bis 3 min nach jedem Start ein). Details: components/vitoconnect/HERKUNFT.md
 external_components:
-  - source: github://dannerph/esphome_vitoconnect
+  - source: github://ESDN83/heizung-vitoconnect@stand-2026-09-23-selbstheilung
     components: [vitoconnect]
+    refresh: 0s
 
 vitoconnect:
   uart_id: uart_vito
@@ -406,6 +409,41 @@ sensor:
     accuracy_decimals: 0
     filters:
       - lambda: 'return x >= 255 ? NAN : x;'
+
+  # -- Diagnose 23.09.2026, Runde 2: Kandidaten fuer Brenner/Pumpen --
+  # Runde 1 ergab: 0x551E (Brenner), 0x0845 (Speicherladepumpe) und 0x0846
+  # (Zirkulationspumpe) liefern auf dieser KW2 nur 0xFF = Adresse unbekannt.
+  # Die Binaersensoren darauf haben nie etwas gemessen. 0x2906 (Umwaelzpumpe M1)
+  # lieferte 0 und ist gueltig. Kandidaten: 0x6515 wird schon zum Schalten der
+  # Zirkulation beschrieben, 0x6513 Speicherladepumpe liegt daneben,
+  # 0x0842 und 0x55D3 fuer den Brenner. Gesucht: Werte 0/1 statt 255.
+  - platform: vitoconnect
+    name: "Diagnose Roh 0x0842"
+    address: 0x0842
+    length: 1
+    entity_category: diagnostic
+    accuracy_decimals: 0
+
+  - platform: vitoconnect
+    name: "Diagnose Roh 0x55D3"
+    address: 0x55D3
+    length: 1
+    entity_category: diagnostic
+    accuracy_decimals: 0
+
+  - platform: vitoconnect
+    name: "Diagnose Roh 0x6513"
+    address: 0x6513
+    length: 1
+    entity_category: diagnostic
+    accuracy_decimals: 0
+
+  - platform: vitoconnect
+    name: "Diagnose Roh 0x6515"
+    address: 0x6515
+    length: 1
+    entity_category: diagnostic
+    accuracy_decimals: 0
 
   # -- Mischer --
   - platform: vitoconnect
