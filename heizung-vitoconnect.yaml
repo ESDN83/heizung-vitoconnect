@@ -1119,7 +1119,7 @@ number:
           ESP_LOGW("vito_w", "HK Niv M2 FAILED - no ACK");
 
 # ===================================================================
-# SCHALTER (Party/Spar/Zirkulation)
+# SCHALTER (Party/Spar)
 # ===================================================================
 switch:
   # Automatisches Stellen bei mehr als 2 min Abweichung. Standard AUS, bis das
@@ -1267,47 +1267,7 @@ switch:
           }
           ESP_LOGW("vito_w", "Party M2 OFF FAILED");
 
-  - platform: template
-    name: "Zirkulationspumpe Schalten"
-    icon: mdi:pump
-    optimistic: true
-    turn_on_action:
-      - lambda: |-
-          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
-          id(uart_vito).write_byte(0x04);
-          id(uart_vito).flush();
-          uint32_t t = millis();
-          while (millis() - t < 2000) {
-            if (id(uart_vito).available()) {
-              uint8_t b; id(uart_vito).read_byte(&b);
-              if (b == 0x05) {
-                uint8_t frame[] = {0x01, 0xF4, 0x65, 0x15, 0x01, 0x01};
-                id(uart_vito).write_array(frame, sizeof(frame));
-                id(uart_vito).flush();
-                ESP_LOGI("vito_w", "Zirk ON OK");
-                return;
-              }
-            }
-            delay(1);
-          }
-          ESP_LOGW("vito_w", "Zirk ON FAILED");
-    turn_off_action:
-      - lambda: |-
-          while (id(uart_vito).available()) { uint8_t d; id(uart_vito).read_byte(&d); }
-          id(uart_vito).write_byte(0x04);
-          id(uart_vito).flush();
-          uint32_t t = millis();
-          while (millis() - t < 2000) {
-            if (id(uart_vito).available()) {
-              uint8_t b; id(uart_vito).read_byte(&b);
-              if (b == 0x05) {
-                uint8_t frame[] = {0x01, 0xF4, 0x65, 0x15, 0x01, 0x00};
-                id(uart_vito).write_array(frame, sizeof(frame));
-                id(uart_vito).flush();
-                ESP_LOGI("vito_w", "Zirk OFF OK");
-                return;
-              }
-            }
-            delay(1);
-          }
-          ESP_LOGW("vito_w", "Zirk OFF FAILED");
+  # Zirkulationspumpe Schalten (0x6515) am 23.09.2026 entfernt: 0x6515 ist bei der
+  # 20CB nur der Status. Die Regelung ignoriert den Schreibzugriff, die Viessmann-
+  # Zirkulation kennt nur Automatik und Zeitprogramm (getestet 23.09.2026 19:42).
+  # Die echte Zirkulation schaltet der HmIP-FSI16 ueber die CCU.
