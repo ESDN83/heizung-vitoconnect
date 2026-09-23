@@ -8,8 +8,21 @@ esp32:
     type: arduino
 
 logger:
-  level: INFO
+  # DIAGNOSE 23.09.2026: DEBUG, um den Stillstand der Optolink-Warteschlange zu
+  # sehen (Lesen stoppt nach 2 Durchlaeufen). Danach wieder auf INFO.
+  level: DEBUG
   baud_rate: 0   # KRITISCH: UART0 Logger aus, sonst Konflikt mit Optolink
+  logs:
+    sensor: INFO
+    binary_sensor: INFO
+    select: INFO
+    number: INFO
+    switch: INFO
+    text_sensor: INFO
+    api: INFO
+    api.service: INFO
+    scheduler: INFO
+    component: INFO
 
 api:
   encryption:
