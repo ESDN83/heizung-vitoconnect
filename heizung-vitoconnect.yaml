@@ -85,6 +85,7 @@ external_components:
     refresh: 0s
 
 vitoconnect:
+  id: vito
   uart_id: uart_vito
   protocol: KW
   # 150s statt 30s (23.09.2026): jede Abfrage wartet auf das naechste 0x05 der
@@ -118,8 +119,119 @@ globals:
     type: int
     restore_value: yes
     initial_value: '0'
+  # Zeitpunkt des letzten Uhr-Stellens (millis). Sperrt das automatische Stellen
+  # fuer 1 h, damit bei einer Regelung, die den Wert nicht uebernimmt, keine
+  # Schleife entsteht.
+  - id: uhr_gestellt_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+# ===================================================================
+# Uhr der Regelung (23.09.2026)
+# Nach jedem Stromausfall faellt die Uhr der Vitotronic zurueck und das Display
+# fragt "Uhrzeit und Datum einstellen". Systemzeit 0x088E, 8 Byte BCD:
+# JJ JJ MM TT WT hh mm ss. Die Regelung liefert sie nur als ganzen Block.
+# Lesen und Schreiben laufen ueber read_raw/write_raw der Komponente, also durch
+# dieselbe Queue wie alle anderen Abfragen (kein direkter UART-Zugriff).
+# ===================================================================
+time:
+  - platform: homeassistant
+    id: ha_zeit
+
+script:
+  - id: uhr_lesen
+    mode: single
+    then:
+      - lambda: |-
+          id(vito).read_raw(0x088E, 8, [](const uint8_t *d, uint8_t len) {
+            if (len != 8) {
+              ESP_LOGW("vito_uhr", "Systemzeit: %u statt 8 Byte", len);
+              return;
+            }
+            for (int i = 0; i < 8; i++) {
+              if ((d[i] >> 4) > 9 || (d[i] & 0x0F) > 9) {
+                ESP_LOGW("vito_uhr", "Systemzeit kein BCD: %02X %02X %02X %02X %02X %02X %02X %02X",
+                         d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+                return;
+              }
+            }
+            auto b = [](uint8_t v) -> int { return (v >> 4) * 10 + (v & 0x0F); };
+            int jahr = b(d[0]) * 100 + b(d[1]);
+            int mon = b(d[2]), tag = b(d[3]), wt = b(d[4]);
+            int std_ = b(d[5]), min_ = b(d[6]), sek = b(d[7]);
+            char txt[96];
+            snprintf(txt, sizeof(txt), "%02d.%02d.%04d %02d:%02d:%02d WT%d",
+                     tag, mon, jahr, std_, min_, sek, wt);
+            id(uhr_regelung).publish_state(txt);
+            if (mon < 1 || mon > 12 || tag < 1 || tag > 31 || std_ > 23 || min_ > 59 || sek > 59) {
+              ESP_LOGW("vito_uhr", "Systemzeit unplausibel: %s", txt);
+              return;
+            }
+            auto jetzt = id(ha_zeit).now();
+            if (!jetzt.is_valid()) return;
+            // Tage seit 1970 (Algorithmus von Howard Hinnant). Beide Seiten sind
+            // Ortszeit, deshalb stimmt die Differenz auch ueber die Zeitumstellung.
+            auto tage = [](int y, int m, int t) -> int64_t {
+              y -= m <= 2;
+              int64_t era = (y >= 0 ? y : y - 399) / 400;
+              int64_t yoe = y - era * 400;
+              int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + t - 1;
+              int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+              return era * 146097 + doe - 719468;
+            };
+            int64_t s_regel = tage(jahr, mon, tag) * 86400 + std_ * 3600 + min_ * 60 + sek;
+            int64_t s_ha = tage(jetzt.year, jetzt.month, jetzt.day_of_month) * 86400
+                         + jetzt.hour * 3600 + jetzt.minute * 60 + jetzt.second;
+            int64_t diff = s_regel - s_ha;
+            id(uhr_abweichung).publish_state((float) diff);
+            ESP_LOGI("vito_uhr", "Regelung %s, Abweichung %lld s", txt, (long long) diff);
+            if (id(uhr_auto).state && (diff > 120 || diff < -120)
+                && (id(uhr_gestellt_ms) == 0 || millis() - id(uhr_gestellt_ms) > 3600000UL)) {
+              ESP_LOGW("vito_uhr", "Abweichung %lld s, stelle Uhr automatisch", (long long) diff);
+              id(uhr_stellen).execute();
+            }
+          });
+
+  - id: uhr_stellen
+    mode: single
+    then:
+      # Erst schreiben, wenn die Queue leer ist. Sonst wartet der Schreibzugriff
+      # hinter bis zu ~37 Abfragen (je ca. 3 s) und die Uhr geht danach um bis zu
+      # 2 min nach.
+      - wait_until:
+          condition:
+            lambda: 'return id(vito).queue_size() == 0;'
+          timeout: 180s
+      - lambda: |-
+          auto t = id(ha_zeit).now();
+          if (!t.is_valid()) {
+            ESP_LOGW("vito_uhr", "Keine gueltige HA-Zeit, Uhr wird nicht gestellt");
+            return;
+          }
+          id(uhr_gestellt_ms) = millis();
+          if (id(uhr_gestellt_ms) == 0) id(uhr_gestellt_ms) = 1;
+          auto b = [](int v) -> uint8_t { return (uint8_t)(((v / 10) << 4) | (v % 10)); };
+          // ESPTime zaehlt 1=So bis 7=Sa, Viessmann 1=Mo bis 7=So. Die Regelung
+          // rechnet den Wochentag beim Setzen ohnehin selbst.
+          int wt = t.day_of_week == 1 ? 7 : t.day_of_week - 1;
+          uint8_t d[8] = { b(t.year / 100), b(t.year % 100), b(t.month), b(t.day_of_month),
+                           b(wt), b(t.hour), b(t.minute), b(t.second) };
+          bool ok = id(vito).write_raw(0x088E, 8, d,
+            [](const uint8_t *, uint8_t) {
+              ESP_LOGI("vito_uhr", "Uhr gestellt, lese zur Kontrolle zurueck");
+              id(uhr_lesen).execute();
+            },
+            [](uint8_t e) { ESP_LOGW("vito_uhr", "Uhr stellen fehlgeschlagen (Fehler %u)", e); });
+          ESP_LOGI("vito_uhr", "Uhr stellen auf %02d.%02d.%04d %02d:%02d:%02d: %s",
+                   t.day_of_month, t.month, t.year, t.hour, t.minute, t.second,
+                   ok ? "eingereiht" : "Queue voll");
 
 interval:
+  # Uhr der Regelung alle 10 min lesen (und bei Bedarf automatisch stellen).
+  - interval: 10min
+    then:
+      - script.execute: uhr_lesen
   # Selbstheilung Optolink-Lesen (23.09.2026): 15 min kein frischer Wert
   # (und mindestens 15 min seit dem Start) -> Neustart. Hoechstens 3 Mal am Stueck
   # ohne erfolgreiches Lesen dazwischen, danach wird nicht mehr neu gestartet
@@ -200,6 +312,20 @@ interval:
 button:
   - platform: restart
     name: "Neustart"
+  - platform: template
+    name: "Uhr stellen"
+    icon: mdi:clock-edit-outline
+    entity_category: config
+    on_press:
+      - script.execute: uhr_stellen
+
+text_sensor:
+  - platform: template
+    name: "Uhrzeit Regelung"
+    id: uhr_regelung
+    icon: mdi:clock-outline
+    entity_category: diagnostic
+    update_interval: never
 
 # ===================================================================
 # SENSOREN  --  VScotHO1 (Geraete-ID 0x20CB, hier per KW-Protokoll)
@@ -480,6 +606,16 @@ sensor:
           return (float)(u >> 8);
 
   # Mischer M1/M2 (0x254C/0x354C) am 23.09.2026 entfernt: bei der 20CB immer 255.
+
+  # Regelung minus HA-Zeit, gefuellt vom Skript uhr_lesen.
+  - platform: template
+    name: "Uhr Abweichung"
+    id: uhr_abweichung
+    unit_of_measurement: "s"
+    icon: mdi:clock-alert-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
 
 # ===================================================================
 # BINAERE SENSOREN
@@ -986,6 +1122,16 @@ number:
 # SCHALTER (Party/Spar/Zirkulation)
 # ===================================================================
 switch:
+  # Automatisches Stellen bei mehr als 2 min Abweichung. Standard AUS, bis das
+  # Stellen per Knopf "Uhr stellen" einmal am Display bestaetigt ist.
+  - platform: template
+    name: "Uhr automatisch stellen"
+    id: uhr_auto
+    icon: mdi:clock-check-outline
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
   - platform: template
     name: "Sparbetrieb M1"
     icon: mdi:leaf

@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <functional>
+#include <utility>
 #include "esphome/core/component.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/uart/uart_component.h"
@@ -69,18 +71,36 @@ class VitoConnect : public uart::UARTDevice, public PollingComponent {
     // template<class D, typename T>
     // bool write(D& datapoint, T value);  // NOLINT todo: make it a const ref or pointer?
 
+    // ESDN83 (Aenderung 5, siehe HERKUNFT.md): Lesen und Schreiben ohne
+    // registrierten Datenpunkt, ueber dieselbe Queue wie update(). Damit greift
+    // kein Lambda mehr an der Queue vorbei direkt auf die UART zu.
+    using RawCallback = std::function<void(const uint8_t* data, uint8_t length)>;
+    using RawErrorCallback = std::function<void(uint8_t error)>;
+    bool read_raw(uint16_t address, uint8_t length, RawCallback on_data,
+                  RawErrorCallback on_error = nullptr);
+    bool write_raw(uint16_t address, uint8_t length, const uint8_t* data,
+                   RawCallback on_data, RawErrorCallback on_error = nullptr);
+    size_t queue_size() const { return _optolink ? _optolink->queue_size() : 0; }
+
   protected:
 
   private:
-    Optolink* _optolink;
+    Optolink* _optolink{nullptr};
     std::vector<Datapoint*> _datapoints;
     std::string protocol;
     struct CbArg {
       CbArg(VitoConnect* vw, Datapoint* d) :
         v(vw),
         dp(d) {}
+      CbArg(VitoConnect* vw, RawCallback on_data, RawErrorCallback on_error) :
+        v(vw),
+        dp(nullptr),
+        raw_data(std::move(on_data)),
+        raw_error(std::move(on_error)) {}
       VitoConnect* v;
-      Datapoint* dp;
+      Datapoint* dp;           // nullptr bei read_raw/write_raw
+      RawCallback raw_data;
+      RawErrorCallback raw_error;
     };
     static void _onData(uint8_t* data, uint8_t len, void* arg);
     static void _onError(uint8_t error, void* arg);

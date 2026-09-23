@@ -163,6 +163,10 @@ class Optolink {
    */
   bool write(uint16_t address, uint8_t length, uint8_t* data, void* arg = nullptr);
 
+  // ESDN83: Fuellstand der Queue, damit ein zeitkritischer Schreibzugriff
+  // (Uhr stellen) erst abgeschickt wird, wenn nichts mehr davor wartet.
+  size_t queue_size() const { return _queue.size(); }
+
   /**
    * @brief Pure virtual method to start the Optolink (implemented in protocol 
    *        classes).

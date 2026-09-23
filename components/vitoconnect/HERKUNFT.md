@@ -39,6 +39,14 @@ external_components:
    kopiert haette (`-Wdeprecated-copy` in `vitoconnect_simpleQueue.h:93`, im
    Ernstfall doppeltes `delete[]`).
 
+5. `vitoconnect.h/.cpp`, `vitoconnect_optolink.h`: `read_raw()` und `write_raw()`
+   fuer Zugriffe ohne registrierten Datenpunkt, mit eigenem Rueckruf. Sie laufen
+   ueber dieselbe Queue wie `update()`; `_onData`/`_onError` pruefen jetzt, ob ein
+   Datenpunkt dranhaengt (vorher haette ein Rueckruf ohne Datenpunkt einen
+   Nullzeiger dereferenziert). Dazu `queue_size()`, damit ein zeitkritischer
+   Schreibzugriff (Uhr stellen, `0x088E`) erst bei leerer Queue abgeschickt wird.
+   `loop()` prueft, ob `_optolink` existiert (unbekanntes Protokoll).
+
 ## Hinweis zum Geraet
 
 Die Regelung meldet unter `0x00F8` die ID **0x20CB (VScotHO1)**, nicht 0x2098

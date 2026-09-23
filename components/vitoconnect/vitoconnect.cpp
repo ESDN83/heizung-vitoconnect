@@ -64,7 +64,7 @@ void VitoConnect::register_datapoint(Datapoint *datapoint) {
 }
 
 void VitoConnect::loop() {
-    _optolink->loop();
+    if (_optolink) _optolink->loop();
 }
 
 void VitoConnect::update() {
@@ -80,16 +80,49 @@ void VitoConnect::update() {
   }
 }
 
+bool VitoConnect::read_raw(uint16_t address, uint8_t length, RawCallback on_data,
+                           RawErrorCallback on_error) {
+  if (!_optolink || length == 0 || length > MAX_DP_LENGTH) return false;
+  CbArg* arg = new CbArg(this, std::move(on_data), std::move(on_error));
+  if (_optolink->read(address, length, reinterpret_cast<void*>(arg))) return true;
+  ESP_LOGW(TAG, "read_raw %04X: Queue voll", address);
+  delete arg;
+  return false;
+}
+
+bool VitoConnect::write_raw(uint16_t address, uint8_t length, const uint8_t* data,
+                            RawCallback on_data, RawErrorCallback on_error) {
+  if (!_optolink || length == 0 || length > MAX_DP_LENGTH) return false;
+  // Optolink::write kopiert die Daten, erwartet aber einen nicht-konstanten Zeiger.
+  uint8_t buf[MAX_DP_LENGTH];
+  memcpy(buf, data, length);
+  CbArg* arg = new CbArg(this, std::move(on_data), std::move(on_error));
+  if (_optolink->write(address, length, buf, reinterpret_cast<void*>(arg))) return true;
+  ESP_LOGW(TAG, "write_raw %04X: Queue voll", address);
+  delete arg;
+  return false;
+}
+
 void VitoConnect::_onData(uint8_t* data, uint8_t len, void* arg) {
   CbArg* cbArg = reinterpret_cast<CbArg*>(arg);
-  cbArg->dp->decode(data, len, cbArg->dp);
+  if (cbArg == nullptr) return;
+  if (cbArg->dp) {
+    cbArg->dp->decode(data, len, cbArg->dp);
+  } else if (cbArg->raw_data) {
+    cbArg->raw_data(data, len);
+  }
   delete cbArg;
 }
 
 void VitoConnect::_onError(uint8_t error, void* arg) {
   ESP_LOGD(TAG, "Error received: %d", error);
   CbArg* cbArg = reinterpret_cast<CbArg*>(arg);
-  if (cbArg->v->_onErrorCb) cbArg->v->_onErrorCb(error, cbArg->dp);
+  if (cbArg == nullptr) return;
+  if (cbArg->dp) {
+    if (cbArg->v->_onErrorCb) cbArg->v->_onErrorCb(error, cbArg->dp);
+  } else if (cbArg->raw_error) {
+    cbArg->raw_error(error);
+  }
   delete cbArg;
 }
 
