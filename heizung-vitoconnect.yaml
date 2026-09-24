@@ -126,6 +126,14 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
+  # Textsensor "Uhrzeit Regelung" nur bei Anlass neu senden (24.09.2026): sein Wert
+  # enthaelt die Sekunden, jede Abfrage waere sonst ein HA-Logbucheintrag alle
+  # 10 min. Anlass: erster Wert nach dem Start, nach "Uhr stellen", Abweichung
+  # ueber 2 min. Die Abweichung selbst (Sensor mit Einheit) laeuft immer mit.
+  - id: uhr_text_senden
+    type: bool
+    restore_value: no
+    initial_value: 'true'
 
 # ===================================================================
 # Uhr der Regelung (23.09.2026)
@@ -163,13 +171,19 @@ script:
             char txt[96];
             snprintf(txt, sizeof(txt), "%02d.%02d.%04d %02d:%02d:%02d WT%d",
                      tag, mon, jahr, std_, min_, sek, wt);
-            id(uhr_regelung).publish_state(txt);
             if (mon < 1 || mon > 12 || tag < 1 || tag > 31 || std_ > 23 || min_ > 59 || sek > 59) {
               ESP_LOGW("vito_uhr", "Systemzeit unplausibel: %s", txt);
+              id(uhr_regelung).publish_state(txt);
               return;
             }
             auto jetzt = id(ha_zeit).now();
-            if (!jetzt.is_valid()) return;
+            if (!jetzt.is_valid()) {
+              if (id(uhr_text_senden)) {
+                id(uhr_regelung).publish_state(txt);
+                id(uhr_text_senden) = false;
+              }
+              return;
+            }
             // Tage seit 1970 (Algorithmus von Howard Hinnant). Beide Seiten sind
             // Ortszeit, deshalb stimmt die Differenz auch ueber die Zeitumstellung.
             auto tage = [](int y, int m, int t) -> int64_t {
@@ -185,6 +199,10 @@ script:
                          + jetzt.hour * 3600 + jetzt.minute * 60 + jetzt.second;
             int64_t diff = s_regel - s_ha;
             id(uhr_abweichung).publish_state((float) diff);
+            if (id(uhr_text_senden) || diff > 120 || diff < -120) {
+              id(uhr_regelung).publish_state(txt);
+              id(uhr_text_senden) = false;
+            }
             ESP_LOGI("vito_uhr", "Regelung %s, Abweichung %lld s", txt, (long long) diff);
             if (id(uhr_auto).state && (diff > 120 || diff < -120)
                 && (id(uhr_gestellt_ms) == 0 || millis() - id(uhr_gestellt_ms) > 3600000UL)) {
@@ -204,13 +222,16 @@ script:
             lambda: 'return id(vito).queue_size() == 0;'
           timeout: 180s
       - lambda: |-
-          auto t = id(ha_zeit).now();
-          if (!t.is_valid()) {
+          if (!id(ha_zeit).now().is_valid()) {
             ESP_LOGW("vito_uhr", "Keine gueltige HA-Zeit, Uhr wird nicht gestellt");
             return;
           }
           id(uhr_gestellt_ms) = millis();
           if (id(uhr_gestellt_ms) == 0) id(uhr_gestellt_ms) = 1;
+          // 4 s Vorlauf: Vom Einreihen bis zur Uebernahme durch die Regelung
+          // vergehen ca. 4 s (naechstes 0x05 plus Telegramm). Ohne Vorlauf lag die
+          // Abweichung nach dem Stellen konstant bei -4 s (23.09.2026).
+          ESPTime t = ESPTime::from_epoch_local(id(ha_zeit).timestamp_now() + 4);
           auto b = [](int v) -> uint8_t { return (uint8_t)(((v / 10) << 4) | (v % 10)); };
           // ESPTime zaehlt 1=So bis 7=Sa, Viessmann 1=Mo bis 7=So. Die Regelung
           // rechnet den Wochentag beim Setzen ohnehin selbst.
@@ -220,10 +241,11 @@ script:
           bool ok = id(vito).write_raw(0x088E, 8, d,
             [](const uint8_t *, uint8_t) {
               ESP_LOGI("vito_uhr", "Uhr gestellt, lese zur Kontrolle zurueck");
+              id(uhr_text_senden) = true;
               id(uhr_lesen).execute();
             },
             [](uint8_t e) { ESP_LOGW("vito_uhr", "Uhr stellen fehlgeschlagen (Fehler %u)", e); });
-          ESP_LOGI("vito_uhr", "Uhr stellen auf %02d.%02d.%04d %02d:%02d:%02d: %s",
+          ESP_LOGI("vito_uhr", "Uhr stellen auf %02d.%02d.%04d %02d:%02d:%02d (inkl. 4 s Vorlauf): %s",
                    t.day_of_month, t.month, t.year, t.hour, t.minute, t.second,
                    ok ? "eingereiht" : "Queue voll");
 
