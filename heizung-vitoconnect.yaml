@@ -281,7 +281,7 @@ interval:
           then:
             - globals.set:
                 id: ha_last_seen
-                value: !lambda 'return millis() / 1000;'
+                value: !lambda 'return esphome::millis() / 1000;'
       - if:
           condition:
             and:
